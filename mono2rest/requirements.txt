@@ -1,0 +1,6 @@
+numpy
+pymoo
+sentence-transformers
+transformers
+torch
+nltk
