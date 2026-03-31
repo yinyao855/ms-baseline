@@ -69,14 +69,18 @@ def _ensure_nltk():
 # ---------------------------------------------------------------------------
 
 class RESTAPIGenerator:
-    def __init__(self, embedder=None):
+    def __init__(self, embedder=None, llm_classifier=None):
         """
         Args:
             embedder: a ``SemanticEmbedder`` instance (reused from Phase 1) for
                       class-name grouping.  If *None*, grouping falls back to
                       simple string matching.
+            llm_classifier: an ``LLMHttpClassifier`` instance for HTTP method
+                      assignment via LLM API.  If *None*, uses local zero-shot
+                      classifier or heuristic fallback.
         """
         self.embedder = embedder
+        self.llm_classifier = llm_classifier
 
     # ------------------------------------------------------------------
     # Step 1: select methods to expose (paper §III-B, Fig. 7)
@@ -113,10 +117,20 @@ class RESTAPIGenerator:
     def assign_http_methods(
         self, exposed: List[Tuple[Method, int]]
     ) -> List[Tuple[Method, int, HTTPMethod]]:
-        """Assign an HTTP verb to each exposed method via zero-shot classification."""
+        """Assign an HTTP verb to each exposed method.
+
+        Backend priority: LLM API → local zero-shot classifier → heuristic.
+        """
+        methods_only = [m for m, _ in exposed]
+        cids = [cid for _, cid in exposed]
+
+        if self.llm_classifier is not None:
+            # LLM API batch classification
+            http_list = self.llm_classifier.classify_batch(methods_only)
+            return [(m, c, h) for m, c, h in zip(methods_only, cids, http_list)]
+
         classifier = _get_classifier()
         results: List[Tuple[Method, int, HTTPMethod]] = []
-
         for method, cid in exposed:
             if classifier is not None:
                 http = self._classify_zero_shot(classifier, method)

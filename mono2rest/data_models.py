@@ -71,9 +71,9 @@ class Cluster:
             "cluster_id": self.cluster_id,
             "methods": [m.to_dict() for m in self.methods],
             "metrics": {
-                "coupling": self.coupling,
-                "cohesion": self.cohesion,
-                "semantic_similarity": self.semantic_similarity,
+                "coupling": float(self.coupling),
+                "cohesion": float(self.cohesion),
+                "semantic_similarity": float(self.semantic_similarity),
             },
         }
 

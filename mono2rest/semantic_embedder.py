@@ -1,9 +1,13 @@
 """
-Semantic embedding module — generates SBERT embeddings for methods and
-pre-computes the pairwise cosine-similarity matrix used by the NSGA-III
-clustering objectives and the URI-generation step.
+Semantic embedding module — generates embeddings for methods and
+pre-computes the pairwise cosine-similarity matrix.
 
-Model: ``bert-base-nli-mean-tokens`` (as specified in the MONO2REST paper).
+Supports two backends (configured via ``backend`` parameter):
+
+- ``"local"`` (default): Uses SBERT ``bert-base-nli-mean-tokens`` locally.
+  Requires ``pip install sentence-transformers``.
+- ``"api"``: Uses an OpenAI-compatible embedding API (text-embedding-3-small, etc.).
+  Requires ``pip install openai`` and an API key.
 """
 from __future__ import annotations
 
@@ -17,17 +21,38 @@ from .data_models import Method
 
 class SemanticEmbedder:
     """
-    Wraps a SentenceTransformer model to produce method embeddings and
-    a pre-computed similarity matrix.
+    Produces method embeddings and a pre-computed similarity matrix.
+    Delegates to either a local SBERT model or an LLM embedding API.
     """
 
-    def __init__(self, model_name: str = "bert-base-nli-mean-tokens"):
-        try:
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(model_name)
-        except ImportError:
-            print("[WARN] sentence-transformers not installed — falling back to hash-based simulation")
-            self.model = None
+    def __init__(
+        self,
+        backend: str = "local",
+        # local backend options
+        model_name: str = "bert-base-nli-mean-tokens",
+        # api backend options
+        api_key: str | None = None,
+        base_url: str | None = None,
+        embedding_model: str = "text-embedding-3-small",
+    ):
+        self.backend = backend
+        self._local_model = None
+        self._api_embedder = None
+
+        if backend == "api":
+            if not api_key:
+                raise ValueError("llm_api_key is required when backend='api'")
+            from .llm_backend import LLMEmbedder
+            self._api_embedder = LLMEmbedder(
+                api_key=api_key, base_url=base_url, model=embedding_model,
+            )
+        else:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._local_model = SentenceTransformer(model_name)
+            except ImportError:
+                print("[WARN] sentence-transformers not installed — "
+                      "falling back to hash-based simulation")
 
     # ------------------------------------------------------------------
     # Public API
@@ -36,11 +61,7 @@ class SemanticEmbedder:
     def embed_methods(self, methods: List[Method]) -> Dict[str, np.ndarray]:
         """Return {method_id: embedding_vector} for every method."""
         texts = [self._build_text(m) for m in methods]
-        if self.model is not None:
-            vectors = self.model.encode(texts, show_progress_bar=True,
-                                        convert_to_numpy=True, normalize_embeddings=True)
-        else:
-            vectors = np.array([self._hash_embed(t) for t in texts])
+        vectors = self._embed_texts_internal(texts)
         return {m.id: vectors[i] for i, m in enumerate(methods)}
 
     def build_similarity_matrix(
@@ -48,21 +69,17 @@ class SemanticEmbedder:
         methods: List[Method],
         embeddings: Dict[str, np.ndarray],
     ) -> np.ndarray:
-        """Return an N×N cosine-similarity matrix (values in [-1, 1])."""
+        """Return an NxN cosine-similarity matrix (values in [-1, 1])."""
         ids = [m.id for m in methods]
         mat = np.stack([embeddings[mid] for mid in ids])  # (N, dim)
-        # Normalise just in case
         norms = np.linalg.norm(mat, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         mat = mat / norms
-        sim = mat @ mat.T  # cosine similarity
-        return sim
+        return mat @ mat.T
 
     def embed_texts(self, texts: List[str]) -> np.ndarray:
         """Embed arbitrary text strings (used for URI class-name grouping)."""
-        if self.model is not None:
-            return self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-        return np.array([self._hash_embed(t) for t in texts])
+        return self._embed_texts_internal(texts)
 
     def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
         na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -71,7 +88,21 @@ class SemanticEmbedder:
         return float(np.dot(a, b) / (na * nb))
 
     # ------------------------------------------------------------------
-    # Text building (paper §III-A2)
+    # Internal dispatch
+    # ------------------------------------------------------------------
+
+    def _embed_texts_internal(self, texts: List[str]) -> np.ndarray:
+        if self._api_embedder is not None:
+            return self._api_embedder.embed_texts(texts)
+        if self._local_model is not None:
+            return self._local_model.encode(
+                texts, show_progress_bar=True,
+                convert_to_numpy=True, normalize_embeddings=True,
+            )
+        return np.array([self._hash_embed(t) for t in texts])
+
+    # ------------------------------------------------------------------
+    # Text building (paper section III-A2)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -83,7 +114,7 @@ class SemanticEmbedder:
         return " ".join(parts)
 
     # ------------------------------------------------------------------
-    # Fallback hash-based embedding (when sentence-transformers is absent)
+    # Fallback hash-based embedding (no external dependencies)
     # ------------------------------------------------------------------
 
     @staticmethod

@@ -1,7 +1,29 @@
 [project]
 name = "ms-baseline"
 version = "0.1.0"
-description = "Add your description here"
+description = "Microservice decomposition baselines (MONO2REST, etc.)"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "numpy",
+    "nltk",
+]
+
+[project.optional-dependencies]
+# Local models (SBERT + zero-shot classifier)
+local = [
+    "sentence-transformers",
+    "transformers",
+    "torch",
+]
+# LLM API backend (OpenAI-compatible)
+llm = [
+    "openai",
+]
+# All backends
+all = [
+    "sentence-transformers",
+    "transformers",
+    "torch",
+    "openai",
+]

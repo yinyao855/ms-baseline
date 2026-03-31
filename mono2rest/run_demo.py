@@ -17,22 +17,33 @@ from mono2rest.main import MONO2REST
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="MONO2REST demo")
+    data_dir = Path(__file__).resolve().parent.parent / "data"
     parser.add_argument(
         "--input", "-i",
-        default=str(Path(__file__).resolve().parent.parent.parent
-                    / "microxpert-refactor" / "demo" / "petclinic" / "ir-a.json"),
-        help="Path to ir-a.json (default: PetClinic demo)",
+        default=str(data_dir / "petclinic" / "ir-a.json"),
+        help="Path to ir-a.json (default: data/petclinic/ir-a.json)",
     )
     parser.add_argument("--clusters", "-k", type=int, default=7)
     parser.add_argument("--output", "-o", default=str(Path(__file__).resolve().parent / "output"))
     parser.add_argument("--generations", "-g", type=int, default=100)
     parser.add_argument("--population", "-p", type=int, default=100)
+    parser.add_argument("--backend", choices=["local", "api"], default="local",
+                        help="'local' (SBERT) or 'api' (LLM API)")
+    parser.add_argument("--api-key", help="API key for LLM backend")
+    parser.add_argument("--base-url", help="Base URL for LLM API")
+    parser.add_argument("--embedding-model", default="text-embedding-3-small")
+    parser.add_argument("--chat-model", default="gpt-4o-mini")
     args = parser.parse_args()
 
     config = {
         "num_clusters": args.clusters,
         "max_generations": args.generations,
         "population_size": args.population,
+        "llm_backend": args.backend,
+        "llm_api_key": args.api_key or os.environ.get("OPENAI_API_KEY"),
+        "llm_base_url": args.base_url or os.environ.get("OPENAI_BASE_URL"),
+        "llm_embedding_model": args.embedding_model,
+        "llm_chat_model": args.chat_model,
     }
     mono = MONO2REST(config)
     result = mono.run(args.input)
