@@ -204,7 +204,8 @@ def main():
     parser.add_argument("--input", "-i", required=True,
                         help="Path to ir-a.json (e.g. data/petclinic/ir-a.json)")
     parser.add_argument("--clusters", "-k", type=int, default=7, help="Number of target clusters")
-    parser.add_argument("--output", "-o", default=".", help="Output directory")
+    parser.add_argument("--output", "-o", default=None,
+                        help="Output directory (default: result/mono2rest/<project>)")
     parser.add_argument("--generations", "-g", type=int, default=100, help="NSGA-III generations")
     parser.add_argument("--population", "-p", type=int, default=100, help="Population size")
     parser.add_argument("--backend", choices=["local", "api"], default="local",
@@ -230,6 +231,10 @@ def main():
     mono = MONO2REST(config)
     result = mono.run(args.input)
 
+    if args.output is None:
+        from pathlib import Path
+        project_name = Path(args.input).resolve().parent.name
+        args.output = os.path.join("result", "mono2rest", project_name)
     os.makedirs(args.output, exist_ok=True)
 
     # Save method-level result
