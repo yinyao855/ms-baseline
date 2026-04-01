@@ -3,13 +3,24 @@ Clustering quality metrics for microservice decomposition baselines.
 
 Four metrics (all computed on the class-level call graph):
 
-- **ICP** (Inter-partition Call Percentage): median ratio of cross-partition
-  call pairs — lower is better.
-- **SM** (Structural Modularity): avg cohesion − avg coupling — higher is better.
-- **IFN** (Interface Number): avg number of classes per partition that are
-  called from other partitions — lower is better.
-- **NED** (Non-Extreme Distribution): fraction of classes in non-extreme
-  partitions — higher is better.
+- **SM** (Structural Modularity):
+  SM = (1/M) Σ scoh_i − (1/C(M,2)) Σ_{i<j} scop_{i,j}
+  where scoh_i = μ_i / m_i², scop_{i,j} = γ_{i,j} / (2·m_i·m_j).
+  Higher is better.  Ref: Bunch (Mancoridis et al.), CARGO (ASE 2022).
+
+- **ICP** (Inter-partition Call Percentage):
+  ICP = Σ cross-partition calls / Σ total calls.
+  Lower is better.  Ref: Mono2Micro (ASE 2021).
+
+- **IFN** (Interface Number):
+  IFN = (1/N) Σ ifn_i, where ifn_i is the number of classes in partition i
+  that are called from other partitions (published interfaces).
+  Lower is better.  Ref: FoSCI (Jin et al. 2019).
+
+- **NED** (Non-Extreme Distribution):
+  NED = 1 − Σ_{i ∈ extreme} n_i / |V|.  A partition is "extreme" if its
+  size is outside [min_threshold, max_threshold] (default [5, 20]).
+  Higher is better.  Ref: Mono2Micro (ASE 2021).
 
 Usage::
 
@@ -25,7 +36,7 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import networkx as nx
 import numpy as np
@@ -65,7 +76,7 @@ def load_partitions(clusters_json_path: str) -> Dict[str, List[str]]:
 def cal_icp(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
     """Inter-partition Call Percentage (lower is better).
 
-    Median of cross-partition call-pair ratios.
+    ICP = Σ cross-partition calls / Σ total calls.
     """
     class_to_part = {}
     for pid, classes in partitions.items():
@@ -75,25 +86,28 @@ def cal_icp(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
     sub_nodes = set(class_to_part.keys())
     subG = G.subgraph(sub_nodes)
 
-    cross_calls: Dict[Tuple[str, str], int] = defaultdict(int)
-    total_cross = 0
-    for u, v in subG.edges():
+    total_calls = 0
+    cross_calls = 0
+    for u, v, data in subG.edges(data=True):
         pu, pv = class_to_part.get(u), class_to_part.get(v)
-        if pu and pv and pu != pv:
-            cross_calls[(pu, pv)] += 1
-            total_cross += 1
+        if not pu or not pv:
+            continue
+        w = data.get("weight", 1)
+        total_calls += w
+        if pu != pv:
+            cross_calls += w
 
-    if total_cross == 0:
+    if total_calls == 0:
         return 0.0
-
-    ratios = [cnt / total_cross for cnt in cross_calls.values()]
-    return float(np.median(ratios))
+    return cross_calls / total_calls
 
 
 def cal_sm(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
     """Structural Modularity (higher is better).
 
-    SM = avg_cohesion − avg_coupling
+    SM = (1/M) Σ scoh_i − (1/C(M,2)) Σ_{i<j} scop_{i,j}
+    scoh_i = μ_i / m_i²    (internal call count / partition size²)
+    scop_{i,j} = γ_{i,j} / (2·m_i·m_j)
     """
     class_to_part = {}
     part_sizes: Dict[str, int] = {}
@@ -108,33 +122,32 @@ def cal_sm(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
     pid_idx = {p: i for i, p in enumerate(pids)}
     M = len(pids)
 
-    # Cohesion: for each partition, intra_edges / size^2
     intra_edges: Dict[str, int] = defaultdict(int)
     inter_edges = np.zeros((M, M), dtype=int)
-    for u, v in subG.edges():
+    for u, v, data in subG.edges(data=True):
         pu, pv = class_to_part.get(u), class_to_part.get(v)
         if not pu or not pv:
             continue
+        w = data.get("weight", 1)
         if pu == pv:
-            intra_edges[pu] += 1
+            intra_edges[pu] += w
         else:
-            inter_edges[pid_idx[pu]][pid_idx[pv]] += 1
+            inter_edges[pid_idx[pu]][pid_idx[pv]] += w
 
     scoh_list = []
     for pid in pids:
         m_i = part_sizes[pid]
-        if m_i <= 1:
+        if m_i == 0:
             scoh_list.append(0.0)
         else:
             scoh_list.append(intra_edges[pid] / (m_i ** 2))
     avg_scoh = float(np.mean(scoh_list))
 
-    # Coupling: for each pair, (edges_ij + edges_ji) / (2 * (size_i + size_j))
     scop_list = []
     for i in range(M):
         for j in range(i + 1, M):
             m1, m2 = part_sizes[pids[i]], part_sizes[pids[j]]
-            denom = 2 * (m1 + m2)
+            denom = 2 * m1 * m2
             if denom == 0:
                 scop_list.append(0.0)
             else:
@@ -172,17 +185,18 @@ def cal_ned(partitions: Dict[str, List[str]],
             min_threshold: int = 5, max_threshold: int = 20) -> float:
     """Non-Extreme Distribution (higher is better).
 
-    Fraction of classes in partitions with size in [min_threshold, max_threshold].
+    NED = 1 − Σ_{i ∈ extreme} n_i / |V|
+    A partition is "extreme" if its size is outside [min_threshold, max_threshold].
     """
     total = sum(len(c) for c in partitions.values())
     if total == 0:
         return 0.0
 
-    non_extreme = sum(
+    extreme = sum(
         len(c) for c in partitions.values()
-        if min_threshold <= len(c) <= max_threshold
+        if not (min_threshold <= len(c) <= max_threshold)
     )
-    return non_extreme / total
+    return 1.0 - extreme / total
 
 
 # ---------------------------------------------------------------------------

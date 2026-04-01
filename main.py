@@ -70,8 +70,25 @@ def run_mono2rest(ir_a_path: str, output_dir: str, num_clusters: int = 7,
         json.dump(result["clusters_json"], f, indent=2, ensure_ascii=False)
 
 
+def run_service_cutter(ir_a_path: str, output_dir: str, num_clusters: int = 7,
+                       algorithm: str = "girvan_newman"):
+    from common.ir_parser import IrAProject
+    from service_cutter.main import run_service_cutter as _run
+
+    project = IrAProject(ir_a_path)
+    class_to_cluster = _run(project, algorithm=algorithm, num_clusters=num_clusters)
+    print(f"    {len(set(class_to_cluster.values()))} clusters")
+
+    os.makedirs(output_dir, exist_ok=True)
+    algo_label = "ServiceCutter-GN" if algorithm == "girvan_newman" else "ServiceCutter-Leung"
+    result = project.build_clusters_json(class_to_cluster, algorithm=algo_label)
+    with open(os.path.join(output_dir, "clusters.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+
+
 def run_all_baselines(num_clusters: int, resolution: float,
                       generations: int, population: int,
+                      sc_algorithm: str = "girvan_newman",
                       skip_baselines: list[str] | None = None):
     skip = set(skip_baselines or [])
 
@@ -107,6 +124,15 @@ def run_all_baselines(num_clusters: int, resolution: float,
             try:
                 run_mono2rest(ir_a_path, out, num_clusters=num_clusters,
                               generations=generations, population=population)
+            except Exception as e:
+                print(f"    ERROR: {e}")
+
+        if "service_cutter" not in skip:
+            print(f"\n  [ServiceCutter] running (k={num_clusters}, algo={sc_algorithm}) ...")
+            out = str(RESULT_DIR / "service_cutter" / project_name)
+            try:
+                run_service_cutter(ir_a_path, out, num_clusters=num_clusters,
+                                   algorithm=sc_algorithm)
             except Exception as e:
                 print(f"    ERROR: {e}")
 
@@ -187,8 +213,11 @@ def main():
                         help="NSGA-III generations for MONO2REST")
     parser.add_argument("--population", "-p", type=int, default=100,
                         help="Population size for MONO2REST")
+    parser.add_argument("--sc-algorithm", default="girvan_newman",
+                        choices=["girvan_newman", "leung"],
+                        help="Service Cutter clustering algorithm")
     parser.add_argument("--skip", nargs="*", default=[],
-                        choices=["louvain", "kmeans", "mono2rest"],
+                        choices=["louvain", "kmeans", "mono2rest", "service_cutter"],
                         help="Skip specific baselines")
     args = parser.parse_args()
 
@@ -201,6 +230,7 @@ def main():
             resolution=args.resolution,
             generations=args.generations,
             population=args.population,
+            sc_algorithm=args.sc_algorithm,
             skip_baselines=args.skip,
         )
 
