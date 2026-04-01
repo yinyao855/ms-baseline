@@ -49,10 +49,22 @@ class SemanticEmbedder:
         else:
             try:
                 from sentence_transformers import SentenceTransformer
-                self._local_model = SentenceTransformer(model_name)
             except ImportError:
                 print("[WARN] sentence-transformers not installed — "
                       "falling back to hash-based simulation")
+            else:
+                # Use full HF repo id so ST v3+ can resolve the model (short id may
+                # trigger "No sentence-transformers model found..." and then fail).
+                resolved_name = model_name
+                if model_name == "bert-base-nli-mean-tokens":
+                    resolved_name = "sentence-transformers/bert-base-nli-mean-tokens"
+                try:
+                    self._local_model = SentenceTransformer(resolved_name)
+                except Exception as exc:
+                    print(
+                        f"[WARN] Failed to load SBERT model {resolved_name!r}: {exc}\n"
+                        "      Falling back to hash-based simulation."
+                    )
 
     # ------------------------------------------------------------------
     # Public API

@@ -9,6 +9,7 @@ dependencies = [
     "nltk",
     "networkx>=3.6.1",
     "scikit-learn>=1.8.0",
+    "httpx[socks]>=0.28.1",
 ]
 
 [project.optional-dependencies]
