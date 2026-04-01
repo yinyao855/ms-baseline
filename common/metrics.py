@@ -1,196 +1,328 @@
-from typing import List, Dict
+"""
+Clustering quality metrics for microservice decomposition baselines.
+
+Four metrics (all computed on the class-level call graph):
+
+- **ICP** (Inter-partition Call Percentage): median ratio of cross-partition
+  call pairs — lower is better.
+- **SM** (Structural Modularity): avg cohesion − avg coupling — higher is better.
+- **IFN** (Interface Number): avg number of classes per partition that are
+  called from other partitions — lower is better.
+- **NED** (Non-Extreme Distribution): fraction of classes in non-extreme
+  partitions — higher is better.
+
+Usage::
+
+    # Evaluate a single baseline result
+    python -m common.metrics -i data/petclinic/ir-a.json -c result/louvain/petclinic/clusters.json
+
+    # Evaluate all baselines on all projects
+    python -m common.metrics --all
+"""
+from __future__ import annotations
+
+import json
+import os
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import networkx as nx
 import numpy as np
-from collections import defaultdict
+
+from .ir_parser import IrAProject
 
 
-def cal_interactive_call_percentage(G, partitions: Dict[str, List[str]]):
+# ---------------------------------------------------------------------------
+# Build networkx graph from IrAProject
+# ---------------------------------------------------------------------------
+
+def build_call_graph(project: IrAProject) -> nx.DiGraph:
+    """Build a directed call graph from IrAProject's class_call_weights."""
+    G = nx.DiGraph()
+    G.add_nodes_from(project.class_fqns)
+    for src, targets in project.class_call_weights.items():
+        for dst, weight in targets.items():
+            G.add_edge(src, dst, weight=weight)
+    return G
+
+
+def load_partitions(clusters_json_path: str) -> Dict[str, List[str]]:
+    """Load a clusters.json file and return {partition_id: [class_fqn, ...]}."""
+    with open(clusters_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    partitions: Dict[str, List[str]] = {}
+    for entry in data.get("clusters", []):
+        pid = str(entry.get("id", entry.get("name", "")))
+        partitions[pid] = entry.get("classes", [])
+    return partitions
+
+
+# ---------------------------------------------------------------------------
+# Metric functions
+# ---------------------------------------------------------------------------
+
+def cal_icp(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
+    """Inter-partition Call Percentage (lower is better).
+
+    Median of cross-partition call-pair ratios.
     """
-    计算跨分区调用百分比（ICP）：分区间调用占比的中位数（值越低越好）
-    G: networkx有向图（节点为类，边为调用关系）
-    partitions: 分区字典 {分区ID: [类1, 类2, ...]}
-    """
-    # 建立类到分区的映射 ~ O(V)
     class_to_part = {}
-    for p_id, classes in partitions.items():
+    for pid, classes in partitions.items():
         for cls in classes:
-            class_to_part[cls] = p_id
+            class_to_part[cls] = pid
 
     sub_nodes = set(class_to_part.keys())
     subG = G.subgraph(sub_nodes)
 
-    # 统计每对分区间的调用次数 ~ O(E)
-    cross_calls = defaultdict(int)  # (p1, p2) -> 调用次数
-    total_cross = 0  # 总跨分区调用次数
-
+    cross_calls: Dict[Tuple[str, str], int] = defaultdict(int)
+    total_cross = 0
     for u, v in subG.edges():
-        p_u = class_to_part[u]
-        p_v = class_to_part[v]
-        if p_u != p_v:
-            cross_calls[(p_u, p_v)] += 1
+        pu, pv = class_to_part.get(u), class_to_part.get(v)
+        if pu and pv and pu != pv:
+            cross_calls[(pu, pv)] += 1
             total_cross += 1
 
     if total_cross == 0:
-        return 0.0  # 无跨分区调用时ICP为0
+        return 0.0
 
-    # 计算每个跨分区调用对的占比 ~ O(M^2)
     ratios = [cnt / total_cross for cnt in cross_calls.values()]
-    # 返回中位数（文档中采用中位数避免极端值影响）
-    return np.median(ratios)
+    return float(np.median(ratios))
 
 
-def cal_structure_modularity(G, partitions):
+def cal_sm(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
+    """Structural Modularity (higher is better).
+
+    SM = avg_cohesion − avg_coupling
     """
-    计算结构模块化（SM）：内聚性平均值 - 耦合性平均值（值越高越好）
-    G: networkx有向图
-    partitions: 分区字典
-    """
-    # 建立类到分区的映射及分区类数量 ~ O(V)
     class_to_part = {}
-    part_sizes = {}  # 分区ID -> 类数量
-    for p_id, classes in partitions.items():
-        part_sizes[p_id] = len(classes)
+    part_sizes: Dict[str, int] = {}
+    for pid, classes in partitions.items():
+        part_sizes[pid] = len(classes)
         for cls in classes:
-            class_to_part[cls] = p_id
+            class_to_part[cls] = pid
 
     sub_nodes = set(class_to_part.keys())
     subG = G.subgraph(sub_nodes)
+    pids = list(partitions.keys())
+    pid_idx = {p: i for i, p in enumerate(pids)}
+    M = len(pids)
 
-    partitions_list = list(partitions.keys())
-    M = len(partitions_list)  # 总分区数
-
-    # 1. 计算每个分区的内聚性（scoh）~ O(M*E)
-    scoh_list = []
-    for p_id in partitions_list:
-        classes_p = partitions[p_id]
-        m_i = part_sizes[p_id]
-        if m_i <= 1:
-            scoh_i = 0.0  # 单个类的分区内聚性为0
-        else:
-            # 统计分区内部的调用边数
-            intra_edges = 0
-            for u, v in subG.edges():
-                if u in classes_p and v in classes_p:
-                    intra_edges += 1
-            scoh_i = intra_edges / (m_i ** 2)  # 内聚性公式
-        scoh_list.append(scoh_i)
-    avg_scoh = np.mean(scoh_list)  # 平均内聚性
-
-    # 2. 计算每对分区的耦合性（scop）~ O(E + M^2)
-    # 预先统计分区对之间的调用边数
-    inter_edges_matrix = np.zeros((M, M), dtype=int)
+    # Cohesion: for each partition, intra_edges / size^2
+    intra_edges: Dict[str, int] = defaultdict(int)
+    inter_edges = np.zeros((M, M), dtype=int)
     for u, v in subG.edges():
-        if class_to_part[u] != class_to_part[v]:
-            p_u = partitions_list.index(class_to_part[u])
-            p_v = partitions_list.index(class_to_part[v])
-            inter_edges_matrix[p_u][p_v] += 1
+        pu, pv = class_to_part.get(u), class_to_part.get(v)
+        if not pu or not pv:
+            continue
+        if pu == pv:
+            intra_edges[pu] += 1
+        else:
+            inter_edges[pid_idx[pu]][pid_idx[pv]] += 1
 
+    scoh_list = []
+    for pid in pids:
+        m_i = part_sizes[pid]
+        if m_i <= 1:
+            scoh_list.append(0.0)
+        else:
+            scoh_list.append(intra_edges[pid] / (m_i ** 2))
+    avg_scoh = float(np.mean(scoh_list))
+
+    # Coupling: for each pair, (edges_ij + edges_ji) / (2 * (size_i + size_j))
     scop_list = []
     for i in range(M):
-        p1 = partitions_list[i]
         for j in range(i + 1, M):
-            p2 = partitions_list[j]
-            m1, m2 = part_sizes[p1], part_sizes[p2]
-            if (m1 + m2) == 0:
-                scop_ij = 0.0
+            m1, m2 = part_sizes[pids[i]], part_sizes[pids[j]]
+            denom = 2 * (m1 + m2)
+            if denom == 0:
+                scop_list.append(0.0)
             else:
-                scop_ij = (inter_edges_matrix[i][j] + inter_edges_matrix[j][i]) / (2 * (m1 + m2))  # 耦合性公式
-            scop_list.append(scop_ij)
-    avg_scop = np.sum(scop_list) * 2 / (M * (M - 1)) if scop_list else 0.0  # 平均耦合性
+                scop_list.append((inter_edges[i][j] + inter_edges[j][i]) / denom)
+    num_pairs = M * (M - 1) / 2
+    avg_scop = float(np.sum(scop_list) / num_pairs) if num_pairs > 0 else 0.0
 
-    # 3. 计算SM
     return avg_scoh - avg_scop
 
 
-def cal_interface_number(G, partitions):
+def cal_ifn(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
+    """Average Interface Number per partition (lower is better).
+
+    A class is an "interface" if it is called from another partition.
     """
-    计算平均接口数量（IFN）：每个分区对外接口数的平均值（值越低越好）
-    G: networkx有向图（边为方法调用，此处简化为类级接口）
-    partitions: 分区字典
-    """
-    # 建立类到分区的映射 ~ O(V)
     class_to_part = {}
-    for p_id, classes in partitions.items():
+    for pid, classes in partitions.items():
         for cls in classes:
-            class_to_part[cls] = p_id
+            class_to_part[cls] = pid
 
     sub_nodes = set(class_to_part.keys())
     subG = G.subgraph(sub_nodes)
 
-    # 统计每个分区的对外接口数（被其他分区调用的类）~ O(E)
-    part_interfaces = defaultdict(set)  # 分区ID -> 对外接口类集合
+    part_interfaces: Dict[str, set] = {pid: set() for pid in partitions}
     for u, v in subG.edges():
-        p_u = class_to_part[u]
-        p_v = class_to_part[v]
-        if p_u != p_v:
-            # v是p_v的类，被外部分区p_u调用，因此v是p_v的接口
-            part_interfaces[p_v].add(v)
+        pu, pv = class_to_part.get(u), class_to_part.get(v)
+        if pu and pv and pu != pv:
+            part_interfaces[pv].add(v)
 
-    # 计算每个分区的接口数（简化为被外部调用的类数量）~ O(M)
-    ifn_list = [len(interfaces) for interfaces in part_interfaces.values()]
-    # 若存在无外部调用的分区，接口数为0
-    for p_id in partitions:
-        if p_id not in part_interfaces:
-            ifn_list.append(0)
-
-    return np.mean(ifn_list)
+    ifn_list = [len(ifaces) for ifaces in part_interfaces.values()]
+    return float(np.mean(ifn_list))
 
 
-def cal_non_extreme_distribution(partitions, min_threshold=5, max_threshold=20):
+def cal_ned(partitions: Dict[str, List[str]],
+            min_threshold: int = 5, max_threshold: int = 20) -> float:
+    """Non-Extreme Distribution (higher is better).
+
+    Fraction of classes in partitions with size in [min_threshold, max_threshold].
     """
-    计算非极端分布（NED）：非极端分区的类占比（值越高越好）
-    partitions: 分区字典
-    min_threshold: 极端小分区的类数量阈值（默认5）
-    max_threshold: 极端大分区的类数量阈值（默认20）
-    """
-    total_classes = sum(len(classes) for classes in partitions.values())
-    if total_classes == 0:
+    total = sum(len(c) for c in partitions.values())
+    if total == 0:
         return 0.0
 
-    # 统计非极端分区的类总数 ~ O(M)
-    non_extreme_classes = 0
-    for classes in partitions.values():
-        cls_count = len(classes)
-        if cls_count < min_threshold or cls_count > max_threshold:
-            non_extreme_classes += cls_count
+    non_extreme = sum(
+        len(c) for c in partitions.values()
+        if min_threshold <= len(c) <= max_threshold
+    )
+    return non_extreme / total
 
-    return non_extreme_classes / total_classes
+
+# ---------------------------------------------------------------------------
+# Evaluate helper
+# ---------------------------------------------------------------------------
+
+def evaluate(
+    ir_a_path: str,
+    clusters_json_path: str,
+    ned_min: int = 5,
+    ned_max: int = 20,
+) -> Dict[str, float]:
+    """Compute all four metrics for a given ir-a.json + clusters.json pair."""
+    project = IrAProject(ir_a_path)
+    G = build_call_graph(project)
+    partitions = load_partitions(clusters_json_path)
+
+    return {
+        "ICP": cal_icp(G, partitions),
+        "SM": cal_sm(G, partitions),
+        "IFN": cal_ifn(G, partitions),
+        "NED": cal_ned(partitions, min_threshold=ned_min, max_threshold=ned_max),
+        "num_clusters": len(partitions),
+        "num_classes": project.num_classes,
+    }
+
+
+def format_metrics(metrics: Dict[str, float]) -> str:
+    """Format metrics dict as a readable string."""
+    return (
+        f"  Clusters:  {int(metrics['num_clusters']):>3d}   "
+        f"Classes: {int(metrics['num_classes']):>3d}\n"
+        f"  ICP:       {metrics['ICP']:.4f}   (lower is better)\n"
+        f"  SM:        {metrics['SM']:.4f}   (higher is better)\n"
+        f"  IFN:       {metrics['IFN']:.4f}   (lower is better)\n"
+        f"  NED:       {metrics['NED']:.4f}   (higher is better)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Evaluate microservice decomposition quality metrics")
+    parser.add_argument("--input", "-i", help="Path to ir-a.json")
+    parser.add_argument("--clusters", "-c", help="Path to clusters.json")
+    parser.add_argument("--all", action="store_true",
+                        help="Evaluate all baselines on all projects under data/ and result/")
+    parser.add_argument("--ned-min", type=int, default=5,
+                        help="NED minimum partition size threshold")
+    parser.add_argument("--ned-max", type=int, default=20,
+                        help="NED maximum partition size threshold")
+    args = parser.parse_args()
+
+    base_dir = Path(__file__).resolve().parent.parent
+
+    if args.all:
+        _run_all(base_dir, args.ned_min, args.ned_max)
+    elif args.input and args.clusters:
+        metrics = evaluate(args.input, args.clusters, args.ned_min, args.ned_max)
+        print(format_metrics(metrics))
+    else:
+        parser.error("Provide --input and --clusters, or use --all")
+
+
+def _run_all(base_dir: Path, ned_min: int, ned_max: int):
+    """Discover and evaluate all baseline × project combinations."""
+    data_dir = base_dir / "data"
+    result_dir = base_dir / "result"
+
+    projects = sorted(p.name for p in data_dir.iterdir() if p.is_dir()) if data_dir.exists() else []
+    baselines = sorted(b.name for b in result_dir.iterdir() if b.is_dir()) if result_dir.exists() else []
+
+    if not projects or not baselines:
+        print("No projects in data/ or no results in result/. Run baselines first.")
+        return
+
+    # Collect all results for table output
+    all_results: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+    for project in projects:
+        ir_a_path = data_dir / project / "ir-a.json"
+        if not ir_a_path.exists():
+            continue
+
+        print(f"\n{'=' * 70}")
+        print(f"  Project: {project}")
+        print(f"{'=' * 70}")
+
+        all_results[project] = {}
+        for baseline in baselines:
+            clusters_path = result_dir / baseline / project / "clusters.json"
+            if not clusters_path.exists():
+                continue
+
+            metrics = evaluate(str(ir_a_path), str(clusters_path), ned_min, ned_max)
+            all_results[project][baseline] = metrics
+
+            print(f"\n  [{baseline}]")
+            print(format_metrics(metrics))
+
+    # Print summary comparison table
+    if all_results:
+        _print_summary_table(all_results)
+
+
+def _print_summary_table(all_results: Dict[str, Dict[str, Dict[str, float]]]):
+    """Print a compact comparison table across all projects and baselines."""
+    print(f"\n\n{'=' * 70}")
+    print("  SUMMARY TABLE")
+    print(f"{'=' * 70}\n")
+
+    # Gather all baseline names
+    all_baselines = sorted({b for proj in all_results.values() for b in proj})
+    metric_names = ["ICP", "SM", "IFN", "NED"]
+    directions = {"ICP": "↓", "SM": "↑", "IFN": "↓", "NED": "↑"}
+
+    for project, baselines in sorted(all_results.items()):
+        print(f"  {project}:")
+
+        # Header
+        header = f"    {'Baseline':<15s} {'K':>3s}"
+        for m in metric_names:
+            header += f"  {m+directions[m]:>8s}"
+        print(header)
+        print(f"    {'-' * (15 + 3 + 10 * len(metric_names))}")
+
+        for baseline in all_baselines:
+            if baseline not in baselines:
+                continue
+            metrics = baselines[baseline]
+            row = f"    {baseline:<15s} {int(metrics['num_clusters']):>3d}"
+            for m in metric_names:
+                row += f"  {metrics[m]:>8.4f}"
+            print(row)
+        print()
 
 
 if __name__ == "__main__":
-    # 1. 构建示例类调用图（有向图）
-    G = nx.DiGraph()
-    # 添加节点（类）
-    example_classes = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
-    G.add_nodes_from(example_classes)
-    # 添加边（调用关系）：A->B表示A调用B
-    edges = [
-        ("A", "B"), ("B", "C"),  # 分区1内部调用
-        ("C", "D"), ("D", "E"),  # 分区2内部调用
-        ("A", "D"), ("B", "E"),  # 跨分区调用（1->2）
-        ("F", "G"), ("G", "H"),  # 分区3内部调用
-        ("H", "I"), ("I", "J"),  # 分区4内部调用
-        ("F", "I"), ("G", "J")  # 跨分区调用（3->4）
-    ]
-    G.add_edges_from(edges)
-
-    # 2. 定义示例分区结果
-    example_partitions = {
-        "1": ["A", "B", "C"],  # 3个类（非极端）
-        "2": ["D", "E"],  # 2个类（极端小）
-        "3": ["F", "G", "H"],  # 3个类（非极端）
-        "4": ["I", "J"]  # 2个类（极端小）
-    }
-
-    # 3. 计算指标
-    icp = cal_interactive_call_percentage(G, example_partitions)
-    sm = cal_structure_modularity(G, example_partitions)
-    ifn = cal_interface_number(G, example_partitions)
-    ned = cal_non_extreme_distribution(example_partitions)
-
-    # 4. 输出结果
-    print(f"跨分区调用百分比（ICP）: {icp:.4f}")
-    print(f"结构模块化（SM）: {sm:.4f}")
-    print(f"平均接口数量（IFN）: {ifn:.4f}")
-    print(f"非极端分布（NED）: {ned:.4f}")
+    main()
