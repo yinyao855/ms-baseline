@@ -8,7 +8,6 @@ import os
 import sys
 from pathlib import Path
 
-# Allow running as ``python run_demo.py`` from inside the package directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mono2rest.main import MONO2REST
@@ -28,23 +27,12 @@ def main():
                         help="Output directory (default: result/mono2rest/<project>)")
     parser.add_argument("--generations", "-g", type=int, default=100)
     parser.add_argument("--population", "-p", type=int, default=100)
-    parser.add_argument("--backend", choices=["local", "api"], default="local",
-                        help="'local' (SBERT) or 'api' (LLM API)")
-    parser.add_argument("--api-key", help="API key for LLM backend")
-    parser.add_argument("--base-url", help="Base URL for LLM API")
-    parser.add_argument("--embedding-model", default="text-embedding-3-small")
-    parser.add_argument("--chat-model", default="gpt-4o-mini")
     args = parser.parse_args()
 
     config = {
         "num_clusters": args.clusters,
         "max_generations": args.generations,
         "population_size": args.population,
-        "llm_backend": args.backend,
-        "llm_api_key": args.api_key or os.environ.get("OPENAI_API_KEY"),
-        "llm_base_url": args.base_url or os.environ.get("OPENAI_BASE_URL"),
-        "llm_embedding_model": args.embedding_model,
-        "llm_chat_model": args.chat_model,
     }
     mono = MONO2REST(config)
     result = mono.run(args.input)
@@ -60,7 +48,6 @@ def main():
     with open(os.path.join(args.output, "clusters.json"), "w", encoding="utf-8") as f:
         json.dump(result["clusters_json"], f, indent=2, ensure_ascii=False)
 
-    # Print summary
     summary = result["method_level"]["summary"]
     print("\n" + "=" * 60)
     print("Summary")

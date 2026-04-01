@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 from .data_models import Cluster, HTTPMethod, Method, RESTEndpoint
 
@@ -69,18 +69,14 @@ def _ensure_nltk():
 # ---------------------------------------------------------------------------
 
 class RESTAPIGenerator:
-    def __init__(self, embedder=None, llm_classifier=None):
+    def __init__(self, embedder=None):
         """
         Args:
             embedder: a ``SemanticEmbedder`` instance (reused from Phase 1) for
                       class-name grouping.  If *None*, grouping falls back to
                       simple string matching.
-            llm_classifier: an ``LLMHttpClassifier`` instance for HTTP method
-                      assignment via LLM API.  If *None*, uses local zero-shot
-                      classifier or heuristic fallback.
         """
         self.embedder = embedder
-        self.llm_classifier = llm_classifier
 
     # ------------------------------------------------------------------
     # Step 1: select methods to expose (paper §III-B, Fig. 7)
@@ -117,18 +113,7 @@ class RESTAPIGenerator:
     def assign_http_methods(
         self, exposed: List[Tuple[Method, int]]
     ) -> List[Tuple[Method, int, HTTPMethod]]:
-        """Assign an HTTP verb to each exposed method.
-
-        Backend priority: LLM API → local zero-shot classifier → heuristic.
-        """
-        methods_only = [m for m, _ in exposed]
-        cids = [cid for _, cid in exposed]
-
-        if self.llm_classifier is not None:
-            # LLM API batch classification
-            http_list = self.llm_classifier.classify_batch(methods_only)
-            return [(m, c, h) for m, c, h in zip(methods_only, cids, http_list)]
-
+        """Assign an HTTP verb to each exposed method via zero-shot classification."""
         classifier = _get_classifier()
         results: List[Tuple[Method, int, HTTPMethod]] = []
         for method, cid in exposed:
@@ -181,7 +166,6 @@ class RESTAPIGenerator:
         clusters: List[Cluster],
     ) -> List[RESTEndpoint]:
         """Build REST endpoints with proper URIs."""
-        # Group by cluster
         cluster_map: Dict[int, List[Tuple[Method, HTTPMethod]]] = defaultdict(list)
         for method, cid, http in assignments:
             cluster_map[cid].append((method, http))
@@ -191,8 +175,6 @@ class RESTAPIGenerator:
 
         for cid, items in cluster_map.items():
             cluster_root = cluster_name_map.get(cid, f"cluster-{cid}")
-
-            # Group class names within this cluster for semantic merging
             class_names = list({m.class_name for m, _ in items})
             class_label = self._merge_class_names(class_names)
 
@@ -205,7 +187,6 @@ class RESTAPIGenerator:
                     uri_parts.append(method_segment)
                 uri = "/" + "/".join(uri_parts)
 
-                # Append path parameter for ID-like single params
                 if len(method.parameter_names) == 1:
                     pname = method.parameter_names[0].lower()
                     if "id" in pname or pname in ("key", "identifier"):
@@ -229,7 +210,6 @@ class RESTAPIGenerator:
         for c in clusters:
             counts: Dict[str, int] = defaultdict(int)
             for m in c.methods:
-                # Normalise inner classes: "PetResource$PetRequest" → "PetResource"
                 top_class = m.class_name.split("$")[0]
                 counts[top_class] += 1
             if counts:
@@ -248,13 +228,11 @@ class RESTAPIGenerator:
 
         if self.embedder is not None:
             vecs = self.embedder.embed_texts([_strip_suffix(n) for n in names])
-            # Pick the name whose embedding is closest to the centroid
             centroid = vecs.mean(axis=0)
             sims = vecs @ centroid
             best = names[int(sims.argmax())]
             return _strip_suffix_and_kebab(best)
 
-        # Fallback: longest common prefix
         prefix = names[0]
         for n in names[1:]:
             while not n.startswith(prefix) and prefix:
@@ -272,7 +250,6 @@ class RESTAPIGenerator:
         try:
             import nltk
             tagged = nltk.pos_tag(words)
-            # Remove leading verbs (VB*)
             non_verb = [w for w, pos in tagged if not pos.startswith("VB")]
             if non_verb:
                 words = non_verb
@@ -293,7 +270,6 @@ _SUFFIXES = (
 
 
 def _strip_suffix(name: str) -> str:
-    # Handle inner classes: "PetResource$PetRequest" → "PetRequest"
     if "$" in name:
         name = name.rsplit("$", 1)[-1]
     for s in _SUFFIXES:

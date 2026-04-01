@@ -40,15 +40,9 @@ class MONO2REST:
         # ---- Phase 1: Microservice identification ----
         print("\n[Phase 1] Microservice identification")
 
-        backend = self.config.get("llm_backend", "local")
-        print(f"  [1/3] Generating embeddings (backend={backend}) …")
-        embedder = SemanticEmbedder(
-            backend=backend,
-            model_name=self.config.get("sbert_model", "bert-base-nli-mean-tokens"),
-            api_key=self.config.get("llm_api_key"),
-            base_url=self.config.get("llm_base_url"),
-            embedding_model=self.config.get("llm_embedding_model", "text-embedding-3-small"),
-        )
+        print("  [1/3] Generating SBERT embeddings …")
+        model_name = self.config.get("sbert_model", "bert-base-nli-mean-tokens")
+        embedder = SemanticEmbedder(model_name=model_name)
         embeddings = embedder.embed_methods(methods)
         sim_matrix = embedder.build_similarity_matrix(methods, embeddings)
         print(f"    similarity matrix: {sim_matrix.shape}")
@@ -75,15 +69,7 @@ class MONO2REST:
 
         # ---- Phase 2: REST API generation ----
         print("\n[Phase 2] REST API generation")
-        llm_classifier = None
-        if backend == "api":
-            from .llm_backend import LLMHttpClassifier
-            llm_classifier = LLMHttpClassifier(
-                api_key=self.config.get("llm_api_key"),
-                base_url=self.config.get("llm_base_url"),
-                model=self.config.get("llm_chat_model", "gpt-4o-mini"),
-            )
-        api_gen = RESTAPIGenerator(embedder=embedder, llm_classifier=llm_classifier)
+        api_gen = RESTAPIGenerator(embedder=embedder)
 
         print("  [1/3] Selecting exposed methods …")
         exposed = api_gen.filter_exposed_methods(clusters, call_graph)
@@ -116,7 +102,6 @@ class MONO2REST:
         methods: List[Method],
         adapter: IrAAdapter,
     ) -> Dict:
-        # Method-level result
         method_result = {
             "clusters": [c.to_dict() for c in clusters],
             "rest_endpoints": [ep.to_dict() for ep in endpoints],
@@ -127,7 +112,6 @@ class MONO2REST:
             },
         }
 
-        # Class-level clusters.json (compatible with ServiceClusterConfig)
         clusters_json = _method_to_class_clusters(clusters, adapter)
 
         return {
@@ -140,13 +124,11 @@ def _method_to_class_clusters(
     clusters: List[Cluster], adapter: IrAAdapter
 ) -> Dict:
     """Convert method-level clustering into class-level ServiceClusterConfig."""
-    # class_fqn → {cluster_id: count}
     class_votes: Dict[str, Counter] = defaultdict(Counter)
     for c in clusters:
         for m in c.methods:
             class_votes[m.class_fqn][c.cluster_id] += 1
 
-    # Assign each class to its majority cluster
     class_to_cluster: Dict[str, int] = {}
     shared_classes = []
     for fqn, votes in class_votes.items():
@@ -167,7 +149,6 @@ def _method_to_class_clusters(
                     ),
                 })
 
-    # Build cluster entries
     cluster_entries: Dict[int, List[str]] = defaultdict(list)
     for fqn, cid in class_to_cluster.items():
         cluster_entries[cid].append(fqn)
@@ -175,7 +156,6 @@ def _method_to_class_clusters(
     entries = []
     for cid in sorted(cluster_entries.keys()):
         classes = sorted(cluster_entries[cid])
-        # Derive a name from the most common simple class name
         simple_names = [c.rsplit(".", 1)[-1] for c in classes]
         dominant = Counter(simple_names).most_common(1)[0][0]
         from .rest_api_generator import _strip_suffix_and_kebab
@@ -208,25 +188,12 @@ def main():
                         help="Output directory (default: result/mono2rest/<project>)")
     parser.add_argument("--generations", "-g", type=int, default=100, help="NSGA-III generations")
     parser.add_argument("--population", "-p", type=int, default=100, help="Population size")
-    parser.add_argument("--backend", choices=["local", "api"], default="local",
-                        help="Embedding/classification backend: 'local' (SBERT) or 'api' (LLM API)")
-    parser.add_argument("--api-key", help="API key for LLM backend")
-    parser.add_argument("--base-url", help="Base URL for LLM API (OpenAI-compatible)")
-    parser.add_argument("--embedding-model", default="text-embedding-3-small",
-                        help="Embedding model name for API backend")
-    parser.add_argument("--chat-model", default="gpt-4o-mini",
-                        help="Chat model name for HTTP classification via API")
     args = parser.parse_args()
 
     config = {
         "num_clusters": args.clusters,
         "max_generations": args.generations,
         "population_size": args.population,
-        "llm_backend": args.backend,
-        "llm_api_key": args.api_key or os.environ.get("OPENAI_API_KEY"),
-        "llm_base_url": args.base_url or os.environ.get("OPENAI_BASE_URL"),
-        "llm_embedding_model": args.embedding_model,
-        "llm_chat_model": args.chat_model,
     }
     mono = MONO2REST(config)
     result = mono.run(args.input)
@@ -237,11 +204,9 @@ def main():
         args.output = os.path.join("result", "mono2rest", project_name)
     os.makedirs(args.output, exist_ok=True)
 
-    # Save method-level result
     with open(os.path.join(args.output, "mono2rest_result.json"), "w", encoding="utf-8") as f:
         json.dump(result["method_level"], f, indent=2, ensure_ascii=False)
 
-    # Save class-level clusters.json
     with open(os.path.join(args.output, "clusters.json"), "w", encoding="utf-8") as f:
         json.dump(result["clusters_json"], f, indent=2, ensure_ascii=False)
 

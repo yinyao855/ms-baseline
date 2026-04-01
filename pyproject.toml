@@ -9,24 +9,11 @@ dependencies = [
     "nltk",
     "networkx>=3.6.1",
     "scikit-learn>=1.8.0",
-    "httpx[socks]>=0.28.1",
 ]
 
 [project.optional-dependencies]
-# Local models (SBERT + zero-shot classifier)
 local = [
     "sentence-transformers",
     "transformers",
     "torch",
-]
-# LLM API backend (OpenAI-compatible)
-llm = [
-    "openai",
-]
-# All backends
-all = [
-    "sentence-transformers",
-    "transformers",
-    "torch",
-    "openai",
 ]
