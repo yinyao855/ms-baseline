@@ -166,6 +166,7 @@ class RESTAPIGenerator:
         clusters: List[Cluster],
     ) -> List[RESTEndpoint]:
         """Build REST endpoints with proper URIs."""
+        # Group by cluster
         cluster_map: Dict[int, List[Tuple[Method, HTTPMethod]]] = defaultdict(list)
         for method, cid, http in assignments:
             cluster_map[cid].append((method, http))
@@ -175,6 +176,8 @@ class RESTAPIGenerator:
 
         for cid, items in cluster_map.items():
             cluster_root = cluster_name_map.get(cid, f"cluster-{cid}")
+
+            # Group class names within this cluster for semantic merging
             class_names = list({m.class_name for m, _ in items})
             class_label = self._merge_class_names(class_names)
 
@@ -187,6 +190,7 @@ class RESTAPIGenerator:
                     uri_parts.append(method_segment)
                 uri = "/" + "/".join(uri_parts)
 
+                # Append path parameter for ID-like single params
                 if len(method.parameter_names) == 1:
                     pname = method.parameter_names[0].lower()
                     if "id" in pname or pname in ("key", "identifier"):
@@ -210,6 +214,7 @@ class RESTAPIGenerator:
         for c in clusters:
             counts: Dict[str, int] = defaultdict(int)
             for m in c.methods:
+                # Normalise inner classes: "PetResource$PetRequest" → "PetResource"
                 top_class = m.class_name.split("$")[0]
                 counts[top_class] += 1
             if counts:
@@ -228,11 +233,13 @@ class RESTAPIGenerator:
 
         if self.embedder is not None:
             vecs = self.embedder.embed_texts([_strip_suffix(n) for n in names])
+            # Pick the name whose embedding is closest to the centroid
             centroid = vecs.mean(axis=0)
             sims = vecs @ centroid
             best = names[int(sims.argmax())]
             return _strip_suffix_and_kebab(best)
 
+        # Fallback: longest common prefix
         prefix = names[0]
         for n in names[1:]:
             while not n.startswith(prefix) and prefix:
@@ -250,6 +257,7 @@ class RESTAPIGenerator:
         try:
             import nltk
             tagged = nltk.pos_tag(words)
+            # Remove leading verbs (VB*)
             non_verb = [w for w, pos in tagged if not pos.startswith("VB")]
             if non_verb:
                 words = non_verb
@@ -270,6 +278,7 @@ _SUFFIXES = (
 
 
 def _strip_suffix(name: str) -> str:
+    # Handle inner classes: "PetResource$PetRequest" → "PetRequest"
     if "$" in name:
         name = name.rsplit("$", 1)[-1]
     for s in _SUFFIXES:

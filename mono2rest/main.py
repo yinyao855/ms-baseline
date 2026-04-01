@@ -102,6 +102,7 @@ class MONO2REST:
         methods: List[Method],
         adapter: IrAAdapter,
     ) -> Dict:
+        # Method-level result
         method_result = {
             "clusters": [c.to_dict() for c in clusters],
             "rest_endpoints": [ep.to_dict() for ep in endpoints],
@@ -112,6 +113,7 @@ class MONO2REST:
             },
         }
 
+        # Class-level clusters.json (compatible with ServiceClusterConfig)
         clusters_json = _method_to_class_clusters(clusters, adapter)
 
         return {
@@ -124,11 +126,13 @@ def _method_to_class_clusters(
     clusters: List[Cluster], adapter: IrAAdapter
 ) -> Dict:
     """Convert method-level clustering into class-level ServiceClusterConfig."""
+    # class_fqn → {cluster_id: count}
     class_votes: Dict[str, Counter] = defaultdict(Counter)
     for c in clusters:
         for m in c.methods:
             class_votes[m.class_fqn][c.cluster_id] += 1
 
+    # Assign each class to its majority cluster
     class_to_cluster: Dict[str, int] = {}
     shared_classes = []
     for fqn, votes in class_votes.items():
@@ -149,6 +153,7 @@ def _method_to_class_clusters(
                     ),
                 })
 
+    # Build cluster entries
     cluster_entries: Dict[int, List[str]] = defaultdict(list)
     for fqn, cid in class_to_cluster.items():
         cluster_entries[cid].append(fqn)
@@ -156,6 +161,7 @@ def _method_to_class_clusters(
     entries = []
     for cid in sorted(cluster_entries.keys()):
         classes = sorted(cluster_entries[cid])
+        # Derive a name from the most common simple class name
         simple_names = [c.rsplit(".", 1)[-1] for c in classes]
         dominant = Counter(simple_names).most_common(1)[0][0]
         from .rest_api_generator import _strip_suffix_and_kebab
