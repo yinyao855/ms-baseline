@@ -138,23 +138,41 @@ class CouplingScorer:
     def score_consistency_constraint(self) -> Dict[Pair, float]:
         """Classes in the same inheritance hierarchy form a cohesive group.
 
-        Classes sharing the same base type (via extendsType) are constrained
-        to be modified jointly → Cohesive Group score of +10.
+        Builds transitive closure of the inheritance tree: if A extends B
+        extends C, then {A, B, C} all belong to the same cohesive group.
+        Every pair within a group receives +10 (Cohesive Group Scorer).
         """
-        hierarchy: Dict[str, Set[str]] = defaultdict(set)
-
+        # Build child → parent mapping
+        parent_of: Dict[str, str] = {}
         for fqn in self.project.class_fqns:
             cls = self._class_map.get(fqn)
             if cls is None:
                 continue
             parent = cls.get("extendsType")
             if parent and parent in self._fqn_set:
-                hierarchy[parent].add(parent)
-                hierarchy[parent].add(fqn)
+                parent_of[fqn] = parent
+
+        # Find the root of each class's inheritance chain
+        def find_root(fqn: str) -> str:
+            visited: Set[str] = set()
+            cur = fqn
+            while cur in parent_of and cur not in visited:
+                visited.add(cur)
+                cur = parent_of[cur]
+            return cur
+
+        # Group classes by their inheritance root
+        hierarchy: Dict[str, Set[str]] = defaultdict(set)
+        for fqn in parent_of:
+            root = find_root(fqn)
+            hierarchy[root].add(root)
+            hierarchy[root].add(fqn)
 
         scores: Dict[Pair, float] = defaultdict(float)
-        for _base, group in hierarchy.items():
+        for _root, group in hierarchy.items():
             members = sorted(group & self._fqn_set)
+            if len(members) < 2:
+                continue
             for a, b in combinations(members, 2):
                 key = _ordered_pair(a, b)
                 scores[key] = max(scores[key], COHESIVE_GROUP_SCORE)

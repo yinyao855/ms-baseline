@@ -60,6 +60,20 @@ def run_service_cutter(
         return _cluster_girvan_newman(G, project.class_fqns, num_clusters)
 
 
+def _weighted_most_valuable_edge(G):
+    """Select the edge with highest weighted betweenness centrality.
+
+    The paper's Gephi-based Girvan-Newman uses edge weights in the
+    betweenness computation.  In networkx, weight is treated as "distance"
+    for shortest-path calculation: a high coupling score (=large weight)
+    makes an edge "expensive" to traverse, so intra-community edges are
+    avoided in shortest paths while low-coupling bridge edges accumulate
+    high betweenness — exactly what Girvan-Newman needs to cut.
+    """
+    betweenness = nx.edge_betweenness_centrality(G, weight="weight")
+    return max(betweenness, key=betweenness.get)
+
+
 def _cluster_girvan_newman(
     G: nx.Graph,
     class_fqns: list[str],
@@ -68,13 +82,14 @@ def _cluster_girvan_newman(
     """Girvan-Newman: iteratively remove highest-betweenness edges.
 
     Deterministic; requires the desired number of clusters as input.
+    Uses weighted betweenness centrality per the paper's GephiSolver.
     """
     k = min(num_clusters, len(class_fqns))
 
     if G.number_of_edges() == 0:
         return {fqn: i % k for i, fqn in enumerate(class_fqns)}
 
-    comp = girvan_newman(G)
+    comp = girvan_newman(G, most_valuable_edge=_weighted_most_valuable_edge)
     for communities in islice(comp, None):
         if len(communities) >= k:
             break
@@ -107,7 +122,7 @@ def _cluster_leung(
     if G.number_of_edges() == 0:
         return {fqn: i for i, fqn in enumerate(class_fqns)}
 
-    communities = label_propagation_communities(G)
+    communities = label_propagation_communities(G, weight="weight")
 
     class_to_cluster: Dict[str, int] = {}
     assigned = set()
