@@ -22,8 +22,13 @@ class IrAAdapter:
     """Parse an ir-a.json file and expose methods + call graph."""
 
     def __init__(self, ir_a_path: str, *, base_package: str | None = None):
+        # Lazy import keeps mono2rest installable without the full ms-baseline
+        # package layout when used standalone.
+        from common.schema_migration import coerce_legacy_method_schema
+
         with open(ir_a_path, "r", encoding="utf-8") as f:
             self.raw: dict = json.load(f)
+        coerce_legacy_method_schema(self.raw)
 
         self.base_package = base_package or self._infer_base_package()
 
