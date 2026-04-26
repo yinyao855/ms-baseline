@@ -18,9 +18,9 @@ Four metrics (all computed on the class-level call graph):
   Lower is better.  Ref: FoSCI (Jin et al. 2019).
 
 - **NED** (Non-Extreme Distribution):
-  NED = 1 − Σ_{i ∈ extreme} n_i / |V|.  A partition is "extreme" if its
-  size is outside [min_threshold, max_threshold] (default [5, 20]).
-  Higher is better.  Ref: Mono2Micro (ASE 2021).
+  NED = 1 − |{S_k : min ≤ |S_k| ≤ max}| / K.  Counts the fraction of
+  services whose size falls OUTSIDE [min_threshold, max_threshold].
+  Lower is better.  Ref: Saied (2023), Wu et al.
 
 Usage::
 
@@ -183,20 +183,21 @@ def cal_ifn(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
 
 def cal_ned(partitions: Dict[str, List[str]],
             min_threshold: int = 5, max_threshold: int = 20) -> float:
-    """Non-Extreme Distribution (higher is better).
+    """Non-Extreme Distribution (lower is better).
 
-    NED = 1 − Σ_{i ∈ extreme} n_i / |V|
-    A partition is "extreme" if its size is outside [min_threshold, max_threshold].
+    NED = 1 − |{S_k : min ≤ |S_k| ≤ max}| / K
+    Counts SERVICES (not classes) whose size is in the reasonable range.
+    NED = 0 means all services are reasonably sized; NED = 1 means none are.
     """
-    total = sum(len(c) for c in partitions.values())
-    if total == 0:
+    K = len(partitions)
+    if K == 0:
         return 0.0
 
-    extreme = sum(
-        len(c) for c in partitions.values()
-        if not (min_threshold <= len(c) <= max_threshold)
+    non_extreme_services = sum(
+        1 for c in partitions.values()
+        if min_threshold <= len(c) <= max_threshold
     )
-    return 1.0 - extreme / total
+    return 1.0 - non_extreme_services / K
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +233,7 @@ def format_metrics(metrics: Dict[str, float]) -> str:
         f"  ICP:       {metrics['ICP']:.4f}   (lower is better)\n"
         f"  SM:        {metrics['SM']:.4f}   (higher is better)\n"
         f"  IFN:       {metrics['IFN']:.4f}   (lower is better)\n"
-        f"  NED:       {metrics['NED']:.4f}   (higher is better)"
+        f"  NED:       {metrics['NED']:.4f}   (lower is better)"
     )
 
 
@@ -315,7 +316,7 @@ def _print_summary_table(all_results: Dict[str, Dict[str, Dict[str, float]]]):
     # Gather all baseline names
     all_baselines = sorted({b for proj in all_results.values() for b in proj})
     metric_names = ["ICP", "SM", "IFN", "NED"]
-    directions = {"ICP": "↓", "SM": "↑", "IFN": "↓", "NED": "↑"}
+    directions = {"ICP": "↓", "SM": "↑", "IFN": "↓", "NED": "↓"}
 
     for project, baselines in sorted(all_results.items()):
         print(f"  {project}:")

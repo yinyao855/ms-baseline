@@ -180,7 +180,7 @@ def _print_summary(all_results: dict[str, dict[str, dict[str, float]]]):
 
     all_baselines = sorted({b for proj in all_results.values() for b in proj})
     metric_names = ["ICP", "SM", "IFN", "NED"]
-    directions = {"ICP": "↓", "SM": "↑", "IFN": "↓", "NED": "↑"}
+    directions = {"ICP": "↓", "SM": "↑", "IFN": "↓", "NED": "↓"}
 
     for project_name, baselines in sorted(all_results.items()):
         print(f"  {project_name}:")
