@@ -78,8 +78,8 @@ class CouplingScorer:
                 referenced.add(_strip_generics(field.get("type", "")))
             for method in cls.get("methods", []):
                 referenced.add(_strip_generics(method.get("returnType", "")))
-                for pt in method.get("parameterTypes", []):
-                    referenced.add(_strip_generics(pt))
+                for p in method.get("parameters", []):
+                    referenced.add(_strip_generics(p.get("type", "")))
 
             for entity_fqn in self._entity_fqns:
                 if entity_fqn in referenced:
@@ -110,11 +110,10 @@ class CouplingScorer:
         for caller_fqn in self.project.class_fqns:
             for method in self.project.class_methods.get(caller_fqn, []):
                 callees: Set[str] = set()
-                for ref in method.get("invokedMethods", []):
-                    dot = ref.rfind(".")
-                    if dot < 0:
+                for call in method.get("calledMethods", []):
+                    target = call.get("targetType", "")
+                    if not target:
                         continue
-                    target = ref[:dot]
                     resolved = self._resolve_target(target)
                     callees.update(resolved)
 

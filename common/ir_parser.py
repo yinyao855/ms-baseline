@@ -20,13 +20,8 @@ class IrAProject:
     """Class-level view of a monolithic Java project parsed from ir-a.json."""
 
     def __init__(self, ir_a_path: str):
-        from .schema_migration import coerce_legacy_method_schema
-
         with open(ir_a_path, "r", encoding="utf-8") as f:
             self.raw: dict = json.load(f)
-        # ir-a.json switched to a structured method schema in v1.0.0; back-fill
-        # the legacy field names so kmeans/louvain/service_cutter keep working.
-        coerce_legacy_method_schema(self.raw)
 
         self.project_id: str = self.raw.get("projectId", "")
         self.base_package = self._infer_base_package()
@@ -97,7 +92,9 @@ class IrAProject:
                     continue
                 self.class_methods[fqn].append(m)
                 text_tokens.extend(_split_camel(method_name))
-                text_tokens.extend(m.get("parameterNames", []))
+                text_tokens.extend(
+                    p.get("name", "") for p in m.get("parameters", [])
+                )
 
             self.class_texts[fqn] = " ".join(text_tokens)
 
@@ -105,12 +102,9 @@ class IrAProject:
         fqn_set = set(self.class_fqns)
         for caller_fqn in self.class_fqns:
             for m in self.class_methods[caller_fqn]:
-                for ref in m.get("invokedMethods", []):
-                    dot = ref.rfind(".")
-                    if dot < 0:
-                        continue
-                    target_fqn = ref[:dot]
-                    if not target_fqn.startswith(self.base_package):
+                for call in m.get("calledMethods", []):
+                    target_fqn = call.get("targetType", "")
+                    if not target_fqn or not target_fqn.startswith(self.base_package):
                         continue
 
                     resolved: List[str] = []

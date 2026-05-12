@@ -31,11 +31,8 @@ class IrAClassAdapter:
     """Parse ir-a.json into a class graph + textual descriptors."""
 
     def __init__(self, ir_a_path: str, *, base_package: str | None = None):
-        from common.schema_migration import coerce_legacy_method_schema
-
         with open(ir_a_path, "r", encoding="utf-8") as f:
             self.raw: dict = json.load(f)
-        coerce_legacy_method_schema(self.raw)
 
         self.base_package = base_package or self._infer_base_package()
 
@@ -142,8 +139,8 @@ class IrAClassAdapter:
                 continue
 
             for m in cls.get("methods", []):
-                for ref in m.get("invokedMethods", []):
-                    target = ref.rsplit(".", 1)[0] if "." in ref else ""
+                for call in m.get("calledMethods", []):
+                    target = call.get("targetType", "")
                     if not target:
                         continue
                     if target in self.fqn_to_idx:

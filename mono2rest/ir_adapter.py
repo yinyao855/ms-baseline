@@ -2,7 +2,7 @@
 IR-A adapter — parses ir-a.json and builds Method objects + method-level call graph.
 
 The call graph is a directed graph where each node is a Method and each edge
-represents a method invocation extracted from the ``invokedMethods`` field in
+represents a method invocation extracted from the ``calledMethods`` field in
 IR-A's MethodInfo.  Interface-to-implementation resolution is handled so that
 calls targeting an interface method are redirected to the concrete
 implementation when one exists.
@@ -22,13 +22,8 @@ class IrAAdapter:
     """Parse an ir-a.json file and expose methods + call graph."""
 
     def __init__(self, ir_a_path: str, *, base_package: str | None = None):
-        # Lazy import keeps mono2rest installable without the full ms-baseline
-        # package layout when used standalone.
-        from common.schema_migration import coerce_legacy_method_schema
-
         with open(ir_a_path, "r", encoding="utf-8") as f:
             self.raw: dict = json.load(f)
-        coerce_legacy_method_schema(self.raw)
 
         self.base_package = base_package or self._infer_base_package()
 
@@ -137,10 +132,20 @@ class IrAAdapter:
                     method_id = base_id
 
                 # Build text description for SBERT
+                params = m.get("parameters", [])
+                param_types = [p.get("type", "") for p in params]
+                param_names = [p.get("name", "") for p in params]
+
                 text_parts = _split_camel(method_name)
-                text_parts.extend(m.get("parameterNames", []))
+                text_parts.extend(param_names)
                 text_parts.append(simple_class)
                 text_desc = " ".join(text_parts)
+
+                invoked = [
+                    f"{c.get('targetType', '')}.{c.get('methodName', '')}"
+                    for c in m.get("calledMethods", [])
+                    if c.get("targetType")
+                ]
 
                 method = Method(
                     id=method_id,
@@ -149,17 +154,17 @@ class IrAAdapter:
                     class_fqn=fqn,
                     package_name=pkg,
                     return_type=m.get("returnType", "void"),
-                    parameter_types=m.get("parameterTypes", []),
-                    parameter_names=m.get("parameterNames", []),
+                    parameter_types=param_types,
+                    parameter_names=param_names,
                     annotations=m.get("annotations", []),
-                    invoked_methods=m.get("invokedMethods", []),
+                    invoked_methods=invoked,
                     text_description=text_desc,
                 )
                 self.methods.append(method)
                 self.method_index[method.id] = method
 
     def _build_call_graph(self):
-        """Build method→method directed call graph from invokedMethods."""
+        """Build method→method directed call graph from calledMethods."""
         # Pre-build lookup: (classFqn, methodName) → list of Method ids
         target_lookup: Dict[Tuple[str, str], List[str]] = defaultdict(list)
         for m in self.methods:
