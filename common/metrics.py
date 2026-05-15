@@ -12,10 +12,10 @@ Four metrics (all computed on the class-level call graph):
   ICP = Σ cross-partition calls / Σ total calls.
   Lower is better.  Ref: Mono2Micro (ASE 2021).
 
-- **IFN** (Interface Number):
-  IFN = (1/N) Σ ifn_i, where ifn_i is the number of classes in partition i
-  that are called from other partitions (published interfaces).
-  Lower is better.  Ref: FoSCI (Jin et al. 2019).
+- **IFN** (Interface Fraction Number):
+  IFN = (1/K) Σ (|Endpoints(S_k)| / |S_k|).  Average ratio of interface
+  classes to total classes per service.  Measures per-service encapsulation
+  quality.  Lower is better.  Ref: adapted from FoSCI (Jin et al. 2019).
 
 - **NED** (Non-Extreme Distribution):
   NED = 1 − |{S_k : min ≤ |S_k| ≤ max}| / K.  Counts the fraction of
@@ -159,9 +159,13 @@ def cal_sm(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
 
 
 def cal_ifn(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
-    """Average Interface Number per partition (lower is better).
+    """Average interface-class ratio per service (lower is better).
+
+    IFN = (1/K) Σ (|Endpoints(S_k)| / |S_k|)
 
     A class is an "interface" if it is called from another partition.
+    The ratio measures per-service encapsulation: a well-designed service
+    exposes only a small fraction of its classes as cross-service interfaces.
     """
     class_to_part = {}
     for pid, classes in partitions.items():
@@ -177,8 +181,14 @@ def cal_ifn(G: nx.DiGraph, partitions: Dict[str, List[str]]) -> float:
         if pu and pv and pu != pv:
             part_interfaces[pv].add(v)
 
-    ifn_list = [len(ifaces) for ifaces in part_interfaces.values()]
-    return float(np.mean(ifn_list))
+    ratios = []
+    for pid, classes in partitions.items():
+        size = len(classes)
+        if size == 0:
+            ratios.append(0.0)
+        else:
+            ratios.append(len(part_interfaces[pid]) / size)
+    return float(np.mean(ratios))
 
 
 def cal_ned(partitions: Dict[str, List[str]],
