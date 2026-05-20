@@ -121,21 +121,42 @@ def _merge_down_to_k(
     G: nx.Graph,
     target_k: int,
 ) -> Dict[str, int]:
-    """Repeatedly merge the smallest cluster into its highest-coupling
-    neighbour until cluster count == target_k. Idempotent if already <= target_k.
+    """Reconcile the cluster count to target_k.
+
+    Two-phase strategy that avoids the god-cluster trap of the original
+    Girvan-Newman cuts:
+      1. SPLIT phase: while any cluster holds more than 2x its fair share
+         (i.e. > (N / target_k) * 2 classes), split it by running a fresh
+         Girvan-Newman cut on the cluster's induced subgraph until the largest
+         resulting child cluster falls below the fair-share ceiling.
+      2. MERGE phase: merge the smallest cluster into its highest-coupling
+         neighbour until cluster count == target_k.
+
+    This keeps SC deterministic and still K-faithful, while making sure no
+    single cluster trivially absorbs 50%+ of the classes (which would let SC
+    inflate SM via the m_k^2 normalisation in the structural modularity).
     """
     if target_k <= 0:
         return class_to_cluster
 
+    total_n = len(class_to_cluster)
+    fair_share = total_n / target_k
+    god_ceiling = fair_share * 2
+
+    # 1. SPLIT god-clusters before merging anything.
+    class_to_cluster = _split_god_clusters(class_to_cluster, G, god_ceiling, target_k)
+
+    # 2. MERGE smallest -> its highest-coupling neighbour, idempotent if <= target_k.
+    # NOTE: candidate target clusters are forbidden to exceed god_ceiling AFTER
+    # the merge — otherwise the merge phase trivially undoes the SPLIT phase
+    # by re-routing every small cluster back into the freshly cracked god.
     while True:
-        # rebuild cluster -> members
         members: Dict[int, list[str]] = {}
         for fqn, cid in class_to_cluster.items():
             members.setdefault(cid, []).append(fqn)
         if len(members) <= target_k:
             return class_to_cluster
 
-        # cluster -> total edge weight to each other cluster
         coupling: Dict[int, Dict[int, float]] = {cid: {} for cid in members}
         for u, v, data in G.edges(data=True):
             cu = class_to_cluster.get(u)
@@ -146,19 +167,88 @@ def _merge_down_to_k(
             coupling[cu][cv] = coupling[cu].get(cv, 0.0) + w
             coupling[cv][cu] = coupling[cv].get(cu, 0.0) + w
 
-        # smallest cluster by member count
         smallest_cid = min(members, key=lambda c: (len(members[c]), c))
-        # its strongest neighbour, fallback to the largest other cluster
+        small_size = len(members[smallest_cid])
+
+        def can_absorb(cid: int) -> bool:
+            return (len(members[cid]) + small_size) <= god_ceiling
+
+        # Prefer the highest-coupling neighbour that can absorb without
+        # creating a god-cluster. If none can, relax and accept any
+        # neighbour (we still need to reach target_k).
         neighbours = coupling[smallest_cid]
-        if neighbours:
+        candidates = [(c, w) for c, w in neighbours.items() if c != smallest_cid and can_absorb(c)]
+        if candidates:
+            target_cid = max(candidates, key=lambda kv: kv[1])[0]
+        elif neighbours:
             target_cid = max(neighbours.items(), key=lambda kv: kv[1])[0]
         else:
             other_cids = [c for c in members if c != smallest_cid]
-            target_cid = max(other_cids, key=lambda c: len(members[c]))
+            absorbable = [c for c in other_cids if can_absorb(c)]
+            pool = absorbable if absorbable else other_cids
+            target_cid = max(pool, key=lambda c: len(members[c]))
 
-        # reassign all classes from smallest_cid -> target_cid
         for fqn in members[smallest_cid]:
             class_to_cluster[fqn] = target_cid
+
+
+def _split_god_clusters(
+    class_to_cluster: Dict[str, int],
+    G: nx.Graph,
+    god_ceiling: float,
+    target_k: int,
+) -> Dict[str, int]:
+    """If any cluster holds more than `god_ceiling` classes, split it by
+    running Girvan-Newman on its induced subgraph until its largest child
+    falls under the ceiling (or the subgraph is too small to split further).
+    """
+    next_cid = max(class_to_cluster.values(), default=-1) + 1
+    while True:
+        members: Dict[int, list[str]] = {}
+        for fqn, cid in class_to_cluster.items():
+            members.setdefault(cid, []).append(fqn)
+
+        # Find the largest cluster exceeding the god-ceiling.
+        oversized = sorted(
+            (cid for cid, ms in members.items() if len(ms) > god_ceiling),
+            key=lambda c: -len(members[c]),
+        )
+        if not oversized:
+            return class_to_cluster
+
+        big_cid = oversized[0]
+        big_members = members[big_cid]
+        # Hard upper cap on total clusters during the split phase. Generous so
+        # we never short-circuit when the initial Girvan-Newman cut already
+        # produced many trivial stubs alongside a big god (PetClinic raw GN
+        # for K=4 yields 8 clusters [16, 3, 1, 1, 1, 1, 1, 1] — splitting the
+        # 16-class god still leaves room before this cap).
+        if len(members) >= max(target_k * 4, 16):
+            return class_to_cluster
+
+        sub = G.subgraph(big_members).copy()
+        if sub.number_of_edges() == 0 or sub.number_of_nodes() < 4:
+            return class_to_cluster
+
+        # One Girvan-Newman cut on the subgraph
+        try:
+            comp_iter = girvan_newman(sub, most_valuable_edge=_weighted_most_valuable_edge)
+            first_split = next(comp_iter)
+        except (StopIteration, ZeroDivisionError):
+            return class_to_cluster
+
+        if len(first_split) < 2:
+            return class_to_cluster
+
+        # Reassign: largest child keeps big_cid, others get new cids
+        ordered = sorted(first_split, key=lambda s: -len(s))
+        keep, others = ordered[0], ordered[1:]
+        for fqn in keep:
+            class_to_cluster[fqn] = big_cid
+        for child in others:
+            for fqn in child:
+                class_to_cluster[fqn] = next_cid
+            next_cid += 1
 
 
 def _cluster_leung(
