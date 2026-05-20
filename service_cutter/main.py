@@ -108,7 +108,57 @@ def _cluster_girvan_newman(
             class_to_cluster[fqn] = next_cid
             next_cid += 1
 
+    # Girvan-Newman often yields more clusters than requested when the
+    # initial graph has many connected components (PetClinic: 8 components
+    # for K=4 target). Merge the smallest cluster into the closest cluster
+    # (highest inter-cluster edge weight) until we hit K, so `-k` is real.
+    class_to_cluster = _merge_down_to_k(class_to_cluster, G, k)
     return class_to_cluster
+
+
+def _merge_down_to_k(
+    class_to_cluster: Dict[str, int],
+    G: nx.Graph,
+    target_k: int,
+) -> Dict[str, int]:
+    """Repeatedly merge the smallest cluster into its highest-coupling
+    neighbour until cluster count == target_k. Idempotent if already <= target_k.
+    """
+    if target_k <= 0:
+        return class_to_cluster
+
+    while True:
+        # rebuild cluster -> members
+        members: Dict[int, list[str]] = {}
+        for fqn, cid in class_to_cluster.items():
+            members.setdefault(cid, []).append(fqn)
+        if len(members) <= target_k:
+            return class_to_cluster
+
+        # cluster -> total edge weight to each other cluster
+        coupling: Dict[int, Dict[int, float]] = {cid: {} for cid in members}
+        for u, v, data in G.edges(data=True):
+            cu = class_to_cluster.get(u)
+            cv = class_to_cluster.get(v)
+            if cu is None or cv is None or cu == cv:
+                continue
+            w = float(data.get("weight", 1))
+            coupling[cu][cv] = coupling[cu].get(cv, 0.0) + w
+            coupling[cv][cu] = coupling[cv].get(cu, 0.0) + w
+
+        # smallest cluster by member count
+        smallest_cid = min(members, key=lambda c: (len(members[c]), c))
+        # its strongest neighbour, fallback to the largest other cluster
+        neighbours = coupling[smallest_cid]
+        if neighbours:
+            target_cid = max(neighbours.items(), key=lambda kv: kv[1])[0]
+        else:
+            other_cids = [c for c in members if c != smallest_cid]
+            target_cid = max(other_cids, key=lambda c: len(members[c]))
+
+        # reassign all classes from smallest_cid -> target_cid
+        for fqn in members[smallest_cid]:
+            class_to_cluster[fqn] = target_cid
 
 
 def _cluster_leung(

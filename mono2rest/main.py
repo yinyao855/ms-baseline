@@ -86,7 +86,8 @@ class MONO2REST:
             print(f"    … and {len(endpoints) - 8} more")
 
         # ---- Build result ----
-        result = self._build_result(clusters, endpoints, methods, adapter)
+        result = self._build_result(clusters, endpoints, methods, adapter,
+                                    target_k=num_clusters)
 
         print("\n" + "=" * 60)
         print("MONO2REST — done")
@@ -101,6 +102,7 @@ class MONO2REST:
         endpoints: List[RESTEndpoint],
         methods: List[Method],
         adapter: IrAAdapter,
+        target_k: int = 0,
     ) -> Dict:
         # Method-level result
         method_result = {
@@ -113,8 +115,12 @@ class MONO2REST:
             },
         }
 
-        # Class-level clusters.json (compatible with ServiceClusterConfig)
-        clusters_json = _method_to_class_clusters(clusters, adapter)
+        # Class-level clusters.json (compatible with ServiceClusterConfig).
+        # When MONO2REST's internal NSGA-III settles on a K different from
+        # the user-requested one (common on small monoliths), reconcile the
+        # class-level output to the requested K so downstream K-controlled
+        # comparisons stay honest.
+        clusters_json = _method_to_class_clusters(clusters, adapter, target_k)
 
         return {
             "method_level": method_result,
@@ -123,9 +129,19 @@ class MONO2REST:
 
 
 def _method_to_class_clusters(
-    clusters: List[Cluster], adapter: IrAAdapter
+    clusters: List[Cluster], adapter: IrAAdapter, target_k: int = 0
 ) -> Dict:
-    """Convert method-level clustering into class-level ServiceClusterConfig."""
+    """Convert method-level clustering into class-level ServiceClusterConfig.
+
+    If target_k > 0 and the resulting class-level cluster count != target_k,
+    post-process by:
+      - merging the smallest cluster into the next-smallest (call coupling
+        is not directly available here, so we fall back to size order) until
+        count <= target_k;
+      - splitting the largest cluster in half (sorted by class FQN) until
+        count >= target_k.
+    Both passes preserve total class coverage and are deterministic.
+    """
     # class_fqn → {cluster_id: count}
     class_votes: Dict[str, Counter] = defaultdict(Counter)
     for c in clusters:
@@ -158,6 +174,10 @@ def _method_to_class_clusters(
     for fqn, cid in class_to_cluster.items():
         cluster_entries[cid].append(fqn)
 
+    # Reconcile to target_k (merge down or split up)
+    if target_k > 0:
+        cluster_entries = _reconcile_to_k(dict(cluster_entries), target_k)
+
     entries = []
     for cid in sorted(cluster_entries.keys()):
         classes = sorted(cluster_entries[cid])
@@ -178,6 +198,41 @@ def _method_to_class_clusters(
         "clusters": entries,
         "sharedClasses": shared_classes,
     }
+
+
+def _reconcile_to_k(
+    cluster_entries: Dict[int, List[str]], target_k: int
+) -> Dict[int, List[str]]:
+    """Force the cluster count to target_k by merging smallest or splitting
+    largest. Deterministic; only operates on the class lists, not the call
+    graph, so it is purely a structural post-processor when NSGA-III converges
+    to a different K than was requested.
+    """
+    if target_k <= 0:
+        return cluster_entries
+
+    # MERGE phase
+    while len(cluster_entries) > target_k:
+        sizes = sorted(cluster_entries.items(), key=lambda kv: (len(kv[1]), kv[0]))
+        smallest_cid, smallest_members = sizes[0]
+        # merge into the next smallest (so total balance is preserved)
+        target_cid, _ = sizes[1]
+        cluster_entries[target_cid] = sorted(set(cluster_entries[target_cid] + smallest_members))
+        del cluster_entries[smallest_cid]
+
+    # SPLIT phase
+    next_cid = max(cluster_entries.keys()) + 1 if cluster_entries else 0
+    while len(cluster_entries) < target_k:
+        largest_cid = max(cluster_entries, key=lambda c: len(cluster_entries[c]))
+        members = sorted(cluster_entries[largest_cid])
+        if len(members) < 2:
+            break  # cannot split further; accept smaller K
+        half = len(members) // 2
+        cluster_entries[largest_cid] = members[:half]
+        cluster_entries[next_cid] = members[half:]
+        next_cid += 1
+
+    return cluster_entries
 
 
 # ---------------------------------------------------------------------------
